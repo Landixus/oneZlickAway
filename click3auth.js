@@ -27,8 +27,9 @@ const https = require("https");
 // ==========================================
 // ====== KONFIGURATION LADEN (INI) ======
 // ==========================================
-let ZWIFT_USER = "user@user.com"; // Fallback
-let ZWIFT_PASS = "password";      // Fallback
+let ZWIFT_USER = "YOUR_ZWIFT_LOGIN_MAIL"; 
+let ZWIFT_PASS = "YOUR_ZWIFT_PASS";      
+let TARGET_SERIAL = ""; // Startet leer für Auto-Erkennung
 
 let DYNAMIC_MAP = {
     0: "j", 1: "i", 2: "l", 3: "k", 4: "a", 5: "w", 6: "s", 8: "x", 9: "m", 13: "d"
@@ -49,12 +50,18 @@ function loadConfig() {
                     const [key, ...rest] = cleanLine.split('=');
                     const k = key.trim().toLowerCase();
                     const v = rest.join('=').trim();
+
                     if (k === 'username' || k === 'user') ZWIFT_USER = v;
                     else if (k === 'password' || k === 'pass') ZWIFT_PASS = v;
+                    else if (k === 'serial') TARGET_SERIAL = v; 
                     else if (!isNaN(k)) DYNAMIC_MAP[parseInt(k)] = v;
                 }
             });
-            console.log(`📁 Konfiguration aus ${iniPath} geladen.`);
+            if (TARGET_SERIAL) {
+                console.log(`📁 Konfiguration geladen. Target-Serial: ${TARGET_SERIAL}`);
+            } else {
+                console.log(`📁 Konfiguration geladen. Modus: AUTO-SERIAL (erster Click gewinnt)`);
+            }
         } catch (e) {
             console.error(`⚠️ Fehler beim Lesen der credentials.ini: ${e.message}`);
         }
@@ -62,8 +69,6 @@ function loadConfig() {
 }
 
 loadConfig();
-
-const SERIAL_CLICK1 = "0B-34C459102C16";
 
 const PROFILE_IKJLM = {
     name: "Click_Deutsch_v99_FinalAuth", 
@@ -196,9 +201,16 @@ async function connectAndAssign(peripheral) {
         const rawSerial = await new Promise(res => chSerial.read((err, data) => res(data?.toString() || "")));
         const serial = rawSerial.trim();
         
-        // STRENGER FILTER: Nur DEIN Gerät zulassen
-        if (norm(serial) !== norm(SERIAL_CLICK1)) {
-            console.log(`⚠️ Fremdes Gerät ignoriert: ${serial}`);
+        // AUTO-SERIAL LOGIK:
+        // Wenn noch keine Serial feststeht, nimm die erste, die wir finden.
+        if (!TARGET_SERIAL) {
+            TARGET_SERIAL = serial;
+            console.log(`✨ Auto-Lock: Nutze Serial ${TARGET_SERIAL} für diese Sitzung.`);
+        }
+
+        // FILTER: Nur das (jetzt feststehende) Gerät zulassen
+        if (norm(serial) !== norm(TARGET_SERIAL)) {
+            console.log(`⚠️ Fremdes Gerät (${serial}) ignoriert. Aktiv ist: ${TARGET_SERIAL}`);
             activeConnecting.delete(id);
             return peripheral.disconnect();
         }
@@ -289,7 +301,6 @@ async function connectAndAssign(peripheral) {
             if (!connectedIds.has(id)) return;
             cycle = (cycle + 1) % 10; 
             const limit = (currentStatus === ST_AUTH_SENT) ? 60000 : 45000;
-            // WICHTIG: Kanal-Refresh nur, wenn NICHT aktiv
             if (Date.now() - lastDataTime > limit && currentStatus !== ST_ACTIVE) {
                 console.log("\n🔄 Kanal-Refresh...");
                 tx.write(Buffer.from([0xac, 0x00]), true); 

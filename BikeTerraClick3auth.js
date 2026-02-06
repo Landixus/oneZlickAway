@@ -1,4 +1,4 @@
-// click2auth.js - Game Controller Version (V8.7 - International Edition)
+// click2auth.js - Game Controller Version (V8.9 - Reactive Auth Handling)
 // Installation: npm i @abandonware/noble axios robotjs
 // Build: pkg . --targets node18-win-x64 --output BikeTerraZwift-click-proxy.exe
 
@@ -24,7 +24,6 @@ function loadNativeModules() {
         if (typeof process.pkg !== 'undefined') {
             console.log("📦 EXE mode active. Initializing driver injection...");
 
-            // 1. RobotJS (Keyboard Simulation)
             const robotPath = path.resolve(baseDir, 'robotjs.node');
             if (fs.existsSync(robotPath)) {
                 robot = require(robotPath);
@@ -33,7 +32,6 @@ function loadNativeModules() {
                 throw new Error("robotjs.node missing in EXE folder!");
             }
 
-            // 2. Noble (Bluetooth)
             const noblePath = path.resolve(baseDir, 'noble.node');
             if (!fs.existsSync(noblePath)) {
                 throw new Error("noble.node missing in EXE folder! (Please rename binding.node)");
@@ -58,10 +56,6 @@ function loadNativeModules() {
         }
     } catch (e) {
         console.error("❌ DRIVER ERROR:", e.message);
-        console.log("\n💡 SETUP CHECK:");
-        console.log("1. robotjs.node must be in the EXE folder.");
-        console.log("2. noble.node (renamed binding.node) must be in the EXE folder.");
-        console.log("3. Both must be installed using Node 18 (npm install).");
         process.exit(1);
     }
 }
@@ -132,10 +126,6 @@ async function getZwiftToken() {
     return null;
 }
 
-/**
- * Enhanced Auth Handling based on Handshake insights
- * Accepts 200 (OK) and 204 (No Content)
- */
 async function proxyAuth(data, token) {
     try {
         const payload = data.slice(3);
@@ -150,16 +140,12 @@ async function proxyAuth(data, token) {
                 timeout: 5000 
             });
 
-        // IMPORTANT: Always reply with FF 04 00 on success (200 or 204)
         if (res.status === 200 || res.status === 204) {
             const header = Buffer.from([0xff, 0x04, 0x00]);
-            // If server provides data (Status 200), append it
             const responseData = res.data ? Buffer.from(res.data) : Buffer.alloc(0);
             return Buffer.concat([header, responseData]);
         }
-    } catch (e) {
-        // Log errors silently or for debugging
-    }
+    } catch (e) {}
     return null;
 }
 
@@ -184,20 +170,25 @@ async function connectClick(peripheral) {
             if (data[0] === 0x47) return; 
             
             // Phase 1 & 2: Auth Handshake
-            if (data[0] === 0xff && data[1] === 0x03 && zwiftToken && currentStatus === ST_IDLE) {
+            // REACTIVE: We respond to auth requests even if we think we are active.
+            if (data[0] === 0xff && data[1] === 0x03 && zwiftToken) {
+                if (currentStatus === ST_ACTIVE) {
+                    console.log("🔄 Device requested re-authentication...");
+                    currentStatus = ST_IDLE; // Reset status to allow re-initialization
+                }
                 proxyAuth(data, zwiftToken).then(reply => { 
-                    if (reply) {
-                        tx.write(reply, true); 
-                    }
+                    if (reply) tx.write(reply, true); 
                 });
             }
 
-            // Unlock Signal
+            // Unlock Signal - Triggers final initialization commands
             if (data[0] === 0x19 && data[1] === 0x10) {
-                console.log("🎯 Hardware unlocked!");
-                currentStatus = ST_ACTIVE;
-                tx.write(Buffer.from([0xac, 0x01]), true);
-                setTimeout(() => tx.write(Buffer.from([0xb6, 0x40]), true), 100);
+                if (currentStatus !== ST_ACTIVE) {
+                    console.log("🎯 Hardware unlocked!");
+                    currentStatus = ST_ACTIVE;
+                    tx.write(Buffer.from([0xac, 0x01]), true);
+                    setTimeout(() => tx.write(Buffer.from([0xb6, 0x40]), true), 100);
+                }
             }
 
             // Key press processing
@@ -219,18 +210,16 @@ async function connectClick(peripheral) {
 
         await rx.subscribeAsync();
         
-        // Initial Nudge (RideOn Signal)
         const nudge = () => {
             tx.write(Buffer.from([0x52, 0x69, 0x64, 0x65, 0x4f, 0x6e, 0x02, 0x03]), true);
             setTimeout(() => tx.write(Buffer.from([0xac, 0x03]), true), 200);
         };
         nudge();
         
-        // Keep-Alive Loop
         setInterval(() => {
             if (peripheral.state !== 'connected') return;
             if (currentStatus === ST_IDLE) nudge();
-            else tx.write(Buffer.from([0x47, 0x00]), true); // Keep-Alive Heartbeat
+            else tx.write(Buffer.from([0x47, 0x00]), true); 
         }, 10000);
 
     } catch (e) { 
@@ -243,10 +232,7 @@ async function main() {
     loadConfig();
     loadNativeModules();
     zwiftToken = await getZwiftToken();
-    if (!zwiftToken) {
-        console.error("Exiting... Login required.");
-        return;
-    }
+    if (!zwiftToken) return;
     
     console.log("🔍 Searching for Zwift Click...");
     noble.on("stateChange", s => s === "poweredOn" ? noble.startScanning([], true) : null);

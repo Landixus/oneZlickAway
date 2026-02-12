@@ -1,5 +1,5 @@
 /**
- * ZWIFT COMMANDER - STEERING EDITION
+ * BikeTerra COMMANDER - STEERING EDITION
  * Hardware: ESP32 D1 Mini (WROOM)
  * Fix: Lenkung (Links/Rechts) reagiert jetzt sofort (Hold-to-steer)
  */
